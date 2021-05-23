@@ -1,0 +1,61 @@
+name: Refresh
+on:
+  schedule:
+    - cron: '0 0 * * 0'
+  push:
+    branches:
+      - 'automation'
+      - 'automation-test'
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    name: "Update Mirror"
+    steps:
+    - name: "Checkout"
+      uses: actions/checkout@v2
+    - name: "Configure"
+      shell: bash
+      run: |
+        git config --global user.name 'GitHub Actions'
+        git config --global user.email 'xaymar@users.noreply.github.com'
+        git config pull.ff only
+        git config pull.rebase true
+    - name: "Remotes"
+      shell: bash
+      run: |
+        git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+        git remote add -f --tags remote https://github.com/webmproject/libvpx.git
+        git fetch --all
+    - name: "Update and Trigger Builds"
+      shell: bash
+      run: |
+        declare -a BRANCHES
+        BRANCHES[${#BRANCHES[@]}]="master"
+
+        # Iterate over every available branch.
+        echo "Testing branches for differences..."
+        for d in ${BRANCHES[@]}; do
+          BRANCH_REQUIRES_UPDATE=false
+          if ! git branch -a | grep origin/${d} > /dev/null; then
+            echo "  '${d}' is missing, creating..."
+            BRANCH_REQUIRES_UPDATE=true
+          elif ! git diff -s --exit-code origin/${d} remote/${d} > /dev/null; then
+            echo "  '${d}' is out of date, updating..."
+            BRANCH_REQUIRES_UPDATE=true
+          fi
+
+          # Always check out the remote branch.
+          git checkout -b "${d}" "remote/${d}" > /dev/null
+
+          # Trigger Builds for any branch that requires an update.
+          if ${BRANCH_REQUIRES_UPDATE}; then
+            git push --force --set-upstream origin ${d}
+            curl -s --show-error \
+              -X POST \
+              -H "Authorization: token ${{ secrets.WORKFLOW_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -d "{\"ref\":\"${{ github.ref }}\",\"inputs\":{\"ref\":\"${d}\"}}" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/workflows/build.yml/dispatches"
+          fi
+        done
